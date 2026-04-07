@@ -1,1 +1,0 @@
-{"class":"org.apache.spark.ml.feature.StringIndexerModel","timestamp":1775470953672,"sparkVersion":"4.0.0","uid":"StringIndexer_9010f943ccd8","paramMap":{"inputCol":"exang","handleInvalid":"keep","stringOrderType":"frequencyDesc","outputCol":"exang_idx"},"defaultParamMap":{"handleInvalid":"error","stringOrderType":"frequencyDesc","outputCol":"StringIndexer_9010f943ccd8__output"}}
