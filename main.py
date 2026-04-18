@@ -6,9 +6,18 @@ import math
 import time
 import tempfile
 
+import os
+import sys
+
+os.environ["JAVA_HOME"]        = r"C:\java\jdk"
+os.environ["HADOOP_HOME"]      = r"C:\hadoop"
+os.environ["SPARK_HOME"]       = r"C:\spark\spark-4.0.0-bin-hadoop3"
+
+# Tell Spark workers to use the exact Python running this script
 os.environ["PYSPARK_PYTHON"]        = sys.executable
 os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
-os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
+
+import json, time, warnings  # rest of your imports continue below...
 
 warnings.filterwarnings("ignore")
 logging.getLogger("py4j").setLevel(logging.ERROR)
@@ -608,6 +617,9 @@ with tabs[0]:
     else:
         spark = get_spark()
         with st.spinner("Loading & preprocessing via Spark..."):
+            if dataset_choice == "Diabetes (Pima Indians)":
+                label_col = "Outcome"
+
             sdf, extra_feats = preprocess(spark, resolved_path, preset, label_col)
             num_cols, cat_present = split_feature_cols(sdf, label_col, cat_cols)
             pdf = sdf.toPandas()
@@ -724,28 +736,75 @@ with tabs[1]:
                 for (a, b) in preset["interaction_cols"]:
                     st.markdown(f"- `{a} × {b}`")
 
-        if st.button("🚀 Train Model"):
+        if st.button("Train Model"):
             spark = get_spark()
             prog  = st.progress(0, text="Loading & preprocessing data...")
 
+            print("\n" + "="*60)
+            print(f"  HealthSpark — Training Run")
+            print("="*60)
+            print(f"  Dataset  : {dataset_choice}")
+            print(f"  Model    : {model_choice}")
+            print(f"  Label    : {label_col}")
+            print(f"  Params   : {params}")
+            print("="*60)
+
+            print("\n[1/5] Loading & preprocessing data...")
+            t_pre = time.time()
             sdf, extra_feats = preprocess(spark, resolved_path, preset, label_col)
             num_cols, cat_present = split_feature_cols(sdf, label_col, cat_cols)
+            total_rows = sdf.count()
+            print(f"      ✓ Loaded {total_rows:,} records")
+            print(f"      ✓ Numeric features  : {len(num_cols)}  → {num_cols}")
+            print(f"      ✓ Categorical feats : {len(cat_present)}  → {cat_present}")
+            if extra_feats:
+                print(f"      ✓ Engineered feats  : {len(extra_feats)}  → {extra_feats}")
+            print(f"      ✓ Preprocessing done in {round(time.time()-t_pre, 2)}s")
 
             prog.progress(20, text="Building ML pipeline...")
+            print("\n[2/5] Building ML pipeline...")
             pipeline = build_pipeline(num_cols, cat_present, label_col, model_choice, params)
+            print(f"      ✓ Stages: {[type(s).__name__ for s in pipeline.getStages()]}")
 
             prog.progress(35, text="Stratified train / test split...")
+            print(f"\n[3/5] Stratified train/test split (test={int(test_size*100)}%)...")
             train_df, test_df = stratified_split(sdf, label_col, test_size, seed=42)
             n_train = train_df.count()
+            n_test  = test_df.count()
+            print(f"      ✓ Train : {n_train:,} records")
+            print(f"      ✓ Test  : {n_test:,} records")
+            for row in sorted(train_df.groupBy(label_col).count().collect(), key=lambda r: r[label_col]):
+                cls_name = label_names.get(int(row[label_col]), str(row[label_col]))
+                print(f"        - {cls_name}: {row['count']:,} ({row['count']/n_train*100:.1f}%)")
 
             prog.progress(50, text=f"Training {model_choice} on {n_train:,} records...")
+            print(f"\n[4/5] Training {model_choice}...")
+            print(f"      Hyperparameters:")
+            for k, v in params.items():
+                print(f"        {k:30s} = {v}")
+            print(f"      Training started...")
             t0    = time.time()
             model = pipeline.fit(train_df)
             elapsed = round(time.time() - t0, 2)
+            print(f"      ✓ Training complete in {elapsed}s")
 
             prog.progress(80, text="Evaluating on test set...")
+            print(f"\n[5/5] Evaluating on {n_test:,} test records...")
+            t_eval = time.time()
             preds   = model.transform(test_df)
             metrics = evaluate_model(preds, label_col)
+            print(f"      ✓ Evaluation done in {round(time.time()-t_eval, 2)}s")
+            print(f"\n{'─'*40}")
+            print(f"  RESULTS")
+            print(f"{'─'*40}")
+            for mname, mval in metrics.items():
+                val_str = f"{mval:.4f}" if mval is not None else "N/A  "
+                bar     = "█" * int((mval or 0) * 20) + "░" * (20 - int((mval or 0) * 20))
+                print(f"  {mname:<12} {val_str}  [{bar}]")
+            print(f"{'─'*40}")
+            print(f"  Total wall time : {round(time.time()-t_pre, 2)}s")
+            print("="*60 + "\n")
+
             prog.progress(100, text="Done!")
 
             st.success(f"✅ Trained in **{elapsed}s** on `{n_train:,}` records")
